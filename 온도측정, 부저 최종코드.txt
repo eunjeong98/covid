@@ -1,0 +1,114 @@
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+
+#include "wiringPi.h"
+#include "wiringPiSPI.h"
+#include "/usr/include/mariadb/mysql.h"
+
+#include <time.h>
+#include <math.h>
+
+#define LED 21
+#define SCE 22
+#define SPI_CHN0 0
+#define SPEED_1MHZ 1000000
+#define SPI_MODE3 3
+#define OBJECT 0xA0
+#define SENSOR 0xA1
+
+#define DBHOST "192.168.0.27"
+#define DBUSER "DESKTOP-IBF6J31"
+#define DBPASS "vnfmwldh2@"
+#define DBNAME "covid"
+
+MYSQL conn;
+MYSQL *connector;
+MYSQL_RES *result;
+MYSQL_ROW row;
+
+int16_t iSensor, iObject;
+char query[1024];
+int distance;
+const int BuzzPin=2;
+
+int16_t SPI_COMMAND(uint8_t ADR){
+	uint8_t Data_Buf[3];
+	Data_Buf[0]=ADR;
+	Data_Buf[1]=0x22;
+	Data_Buf[2]=0x22;
+
+	digitalWrite(SCE,0);
+	delayMicroseconds(10);
+
+	wiringPiSPIDataRW(SPI_CHN0,Data_Buf,1);
+	delayMicroseconds(10);
+	wiringPiSPIDataRW(SPI_CHN0,Data_Buf+1,1);
+	delayMicroseconds(10);
+	wiringPiSPIDataRW(SPI_CHN0,Data_Buf+2,1);
+	delayMicroseconds(10);
+
+	digitalWrite(SCE,1);
+	return(Data_Buf[2]*256+Data_Buf[1]);
+}
+int main(void){
+	wiringPiSetupGpio();
+	pinMode(BuzzPin,OUTPUT);
+	time_t ct = time(NULL);
+	struct tm tm = *localtime(&ct);
+
+	wiringPISetup();
+	if(wiringPiSetupGpio()==-1){
+		fprintf(stdout,"Unable to start wiringPi:%s\n", strerror(errno));
+		return 1;
+	}
+	if(wiringPiSPISetup(SPI_CHN0,SPEED_1MHZ)==-1){
+		fprintf(stdout,"wiringPiSPISetup Failed:%s\n",strerror(errno));
+		return 1;
+	}
+	pinMode(LED,OUTPUT);
+	pinMode(SCE,OUTPUT);
+	digitalWrite(SCE,1);
+	wiringPiSPISetupMode(SPI_CHN0,SPEED_1MHZ,SPI_MODE3);
+	delay(500);
+	
+	connector=mysql_init(NULL);
+	if(!mysql_real_connect(connector,DBHOST,DBUSER,DBPASS,DBNAME,3306,NULL,0)){
+		fprintf(stderr,"%s\n",mysql_error(connector));
+	}
+	printf("MySQL(mariadb) opened.\n");
+
+while(1){
+	sprintf(query,"select * from tb_distance where distance = 1 And rdate > DATE_ADD(NOW(), INTERVAL -1 SECOND)");
+	ct=time(NULL);
+	tm=*localtime(&ct);
+	printf("current date time " %d-%d-%d %d:%d:%d\n", tm.tm_year+1900, tm.tm_mon+1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+	printf("%s\n", query);
+	mysql_query(connector,query);
+	result=mysql_store_result(connector);
+	if(mysql_num_rows(result)>0){
+		iSensor=SPI_COMMAND(SENSOR);
+		digitalWrite(LED,1);
+		delayMicroseconds(10);
+		iObject=SPI_COMMAND(OBJECT);
+		digitalWrite(LED,0);
+		delay(100);
+		printf("Sensor:%5.2f,Object:%5.2f\n",((double)iSensor/100),((double)iObject/100));
+		if((double)iObject/100<=36.5){
+			digitalWrite(BuzzPin,HIGH);
+			delay(100);
+		}
+		sprintf(query,"insert into tb_temperature (temperature, datetime) values (%5.2f, now())",(double)iObject/100);
+		printf("%s\n",query);
+		mysql_query(connector,query);
+		fprintf(stderr,"%s\n",mysql_error(connector));
+		}
+		else{
+			delay(100);
+		}
+	}
+	mysql_close(connector);
+	return 0;
+}
+			
